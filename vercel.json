@@ -6,7 +6,7 @@
   "framework": "nextjs",
   "builds": [
     {
-      "src": "src/app/**/*",
+      "src": "next.config.js",
       "use": "@vercel/next"
     }
   ],
