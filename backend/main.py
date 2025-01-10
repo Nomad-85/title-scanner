@@ -17,7 +17,10 @@ app = FastAPI()
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Your Next.js frontend URL
+    allow_origins=[
+        "https://your-frontend-domain.vercel.app",
+        "http://localhost:3000"  # Keep for local development
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -142,138 +145,86 @@ def extract_vin(image) -> list:
         raise
 
 def image_to_base64(image) -> str:
-    """Convert OpenCV image to base64 string"""
-    _, buffer = cv2.imencode('.png', image)
+    """Convert OpenCV image to base64 string with thumbnail generation"""
+    # Calculate thumbnail size (maintaining aspect ratio)
+    height, width = image.shape[:2]
+    max_thumb_size = 300  # Maximum thumbnail width/height
+    scale = max_thumb_size / max(width, height)
+    thumb_size = (int(width * scale), int(height * scale))
+    
+    # Create thumbnail
+    thumbnail = cv2.resize(image, thumb_size, interpolation=cv2.INTER_AREA)
+    
+    # Convert to base64
+    _, buffer = cv2.imencode('.png', thumbnail)
     return f"data:image/png;base64,{base64.b64encode(buffer).decode()}"
 
 @app.post("/api/process")
 async def process_pdf(file: UploadFile = File(...)):
     try:
-        # Read PDF file
         contents = await file.read()
         
         try:
-            # Convert PDF to images with explicit poppler path
-            print("\nStarting PDF conversion:")
-            print(f"Using Poppler path: {poppler_path}")
-            
-            try:
-                images = convert_from_bytes(
-                    contents,
-                    dpi=300,
-                    poppler_path=poppler_path,  # Explicitly specify poppler path
-                    use_pdftocairo=True,  # Force using pdftocairo
-                    strict=False  # Be more lenient with PDF formatting
-                )
-                
-            except PDFPageCountError as pdf_err:
-                print(f"PDF conversion error: {str(pdf_err)}")
-                # Try to get more diagnostic information
-                try:
-                    with open('temp.pdf', 'wb') as f:
-                        f.write(contents)
-                    result = subprocess.run([os.path.join(poppler_path, 'pdfinfo.exe'), 'temp.pdf'], 
-                                         capture_output=True, text=True)
-                    print(f"PDF info: {result.stdout or result.stderr}")
-                except Exception as diag_err:
-                    print(f"Diagnostic error: {str(diag_err)}")
-                finally:
-                    if os.path.exists('temp.pdf'):
-                        os.remove('temp.pdf')
-                
-                raise HTTPException(
-                    status_code=500,
-                    detail={
-                        "message": "Failed to convert PDF. Poppler error.",
-                        "error": str(pdf_err),
-                        "poppler_path": poppler_path
-                    }
-                )
-            except Exception as conv_err:
-                print(f"General conversion error: {str(conv_err)}")
-                print(f"Poppler path: {poppler_path}")
-                raise HTTPException(
-                    status_code=500,
-                    detail={
-                        "message": "Failed to process PDF",
-                        "error": str(conv_err),
-                        "poppler_path": poppler_path
-                    }
-                )
-            
-            if not images:
-                print("No images extracted from PDF")
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "message": "Could not extract images from PDF",
-                        "error": "No images found in PDF"
-                    }
-                )
+            # Convert PDF to images
+            images = convert_from_bytes(
+                contents,
+                dpi=300,
+                poppler_path=poppler_path,
+                use_pdftocairo=True,
+                strict=False
+            )
             
             print(f"Successfully converted PDF. Got {len(images)} pages")
             
-            # Process first page
-            try:
-                first_page = np.array(images[0])
-                print("Converting first page to numpy array")
-                
-                processed_image = process_image(first_page)
-                print("Image processing complete")
-                
-                # Extract VINs
-                print("Starting VIN extraction...")
-                vins = extract_vin(processed_image)
-                print(f"Found VINs: {vins}")
-                
-                # Convert processed image to base64 for preview
-                print("Converting image to base64...")
-                image_base64 = image_to_base64(processed_image)
-                print("Base64 conversion complete")
-                
-            except Exception as proc_err:
-                print(f"Image processing error: {str(proc_err)}")
-                raise HTTPException(
-                    status_code=500,
-                    detail={
-                        "message": "Failed to process image",
-                        "error": str(proc_err)
-                    }
-                )
+            all_results = []
+            processed_images = []
             
-            if vins:
-                return {
-                    "success": True,
-                    "vins": [{"pageNumber": 1, "vin": vin, "confidence": 0.95} for vin in vins],
-                    "processedImage": image_base64
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": {
-                        "message": "No valid Tesla VINs found in document",
-                        "code": "NO_VINS_FOUND"
-                    },
-                    "processedImage": image_base64
-                }
-                
-        except HTTPException:
-            raise
+            # Process each page
+            for page_num, image in enumerate(images, 1):
+                try:
+                    print(f"\nProcessing page {page_num}")
+                    page_array = np.array(image)
+                    
+                    processed_image = process_image(page_array)
+                    vins = extract_vin(processed_image)
+                    
+                    # Convert processed image to base64 for preview
+                    image_base64 = image_to_base64(processed_image)
+                    
+                    # Store results for this page
+                    for vin in vins:
+                        all_results.append({
+                            "pageNumber": page_num,
+                            "vin": vin,
+                            "confidence": 0.95
+                        })
+                    
+                    # Always add the processed image
+                    processed_images.append({
+                        "pageNumber": page_num,
+                        "image": image_base64
+                    })
+                    
+                except Exception as page_err:
+                    print(f"Error processing page {page_num}: {str(page_err)}")
+                    continue
+            
+            return {
+                "success": True,
+                "vins": all_results,
+                "processedImages": processed_images  # Make sure this is included in response
+            }
+            
         except Exception as e:
-            import traceback
-            print("Error processing PDF:")
-            print(traceback.format_exc())
             raise HTTPException(
                 status_code=500,
                 detail={
-                    "message": "Internal server error",
-                    "error": str(e),
-                    "traceback": traceback.format_exc()
+                    "message": "Processing error",
+                    "error": str(e)
                 }
             )
-
+            
     except Exception as e:
-        print(f"Outer exception: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail={
