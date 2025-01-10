@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: vin-extractor-api
+    env: python
+    buildCommand: |
+      # Install system dependencies
+      apt-get update && apt-get install -y \
+        tesseract-ocr \
+        poppler-utils \
+        python3-pip
+      pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: TESSERACT_PATH
+        value: /usr/bin/tesseract
+      - key: POPPLER_PATH
+        value: /usr/bin 

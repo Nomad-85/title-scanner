@@ -11,6 +11,9 @@ import os
 import sys
 from typing import Optional
 from pdf2image.exceptions import PDFPageCountError
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI()
 
@@ -26,37 +29,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configure paths for Windows
+# Configure paths for production
+TESSERACT_PATH = os.getenv('TESSERACT_PATH', r'C:\Users\tmoses\AppData\Local\Programs\Tesseract-OCR\tesseract.exe')
+POPPLER_PATH = os.getenv('POPPLER_PATH', r'C:\Users\tmoses\AppData\Local\Programs\poppler-24.08.0\Library\bin')
+
+# Update Tesseract path
 if os.name == 'nt':  # Windows
-    # Update Tesseract path
-    pytesseract.pytesseract.tesseract_cmd = r'C:\Users\tmoses\AppData\Local\Programs\Tesseract-OCR\tesseract.exe'
-    
-    # Update Poppler path - store full paths to required executables
-    poppler_path = r'C:\Users\tmoses\AppData\Local\Programs\poppler-24.08.0\Library\bin'
-    
-    # Verify poppler executables exist
-    required_files = ['pdftocairo.exe', 'pdfinfo.exe']
-    for file in required_files:
-        full_path = os.path.join(poppler_path, file)
-        if not os.path.exists(full_path):
-            print(f"WARNING: Required Poppler file not found: {full_path}")
-    
-    # Add Poppler to system PATH if not already there
-    if poppler_path not in os.environ['PATH']:
-        os.environ['PATH'] = f"{poppler_path};{os.environ['PATH']}"
-    
-    # Also set the path for pdf2image
-    os.environ['POPPLER_PATH'] = poppler_path
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+else:  # Linux/Unix
+    os.environ['TESSDATA_PREFIX'] = '/usr/share/tesseract-ocr/4.00/tessdata'
+
+# Add Poppler to system PATH if not already there
+if POPPLER_PATH not in os.environ['PATH']:
+    os.environ['PATH'] = f"{POPPLER_PATH}:{os.environ['PATH']}"
 
 # Add debug logging
 print("\nEnvironment Setup:")
 print(f"Tesseract command: {pytesseract.pytesseract.tesseract_cmd}")
-print(f"Poppler path: {poppler_path}")
+print(f"Poppler path: {POPPLER_PATH}")
 print(f"POPPLER_PATH env var: {os.environ.get('POPPLER_PATH')}")
 print("\nVerifying Poppler installation:")
 try:
     import subprocess
-    result = subprocess.run([os.path.join(poppler_path, 'pdfinfo.exe'), '-v'], 
+    result = subprocess.run([os.path.join(POPPLER_PATH, 'pdfinfo.exe'), '-v'], 
                           capture_output=True, text=True)
     print(f"Poppler version check: {result.stdout or result.stderr}")
 except Exception as e:
@@ -169,7 +164,7 @@ async def process_pdf(file: UploadFile = File(...)):
             images = convert_from_bytes(
                 contents,
                 dpi=300,
-                poppler_path=poppler_path,
+                poppler_path=POPPLER_PATH,
                 use_pdftocairo=True,
                 strict=False
             )
