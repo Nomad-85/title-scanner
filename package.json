@@ -27,6 +27,11 @@
     "typescript": "5.3.3",
     "xlsx": "^0.18.5"
   },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.2.47",
+    "typescript": "^5.3.3"
+  },
   "engines": {
     "node": ">=18.0.0"
   }
