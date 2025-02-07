@@ -11,47 +11,49 @@ import os
 import sys
 from typing import Optional
 from pdf2image.exceptions import PDFPageCountError
-from dotenv import load_dotenv
-
-load_dotenv()
 
 app = FastAPI()
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://your-frontend-domain.vercel.app",
-        "http://localhost:3000"  # Keep for local development
-    ],
+    allow_origins=["http://localhost:3000"],  # Your Next.js frontend URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure paths for production
-TESSERACT_PATH = os.getenv('TESSERACT_PATH', r'C:\Users\tmoses\AppData\Local\Programs\Tesseract-OCR\tesseract.exe')
-POPPLER_PATH = os.getenv('POPPLER_PATH', r'C:\Users\tmoses\AppData\Local\Programs\poppler-24.08.0\Library\bin')
-
-# Update Tesseract path
+# Configure paths for Windows
 if os.name == 'nt':  # Windows
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
-else:  # Linux/Unix
-    os.environ['TESSDATA_PREFIX'] = '/usr/share/tesseract-ocr/4.00/tessdata'
-
-# Add Poppler to system PATH if not already there
-if POPPLER_PATH not in os.environ['PATH']:
-    os.environ['PATH'] = f"{POPPLER_PATH}:{os.environ['PATH']}"
+    # Update Tesseract path
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Users\tmoses\AppData\Local\Programs\Tesseract-OCR\tesseract.exe'
+    
+    # Update Poppler path - store full paths to required executables
+    poppler_path = r'C:\Users\tmoses\AppData\Local\Programs\poppler-24.08.0\Library\bin'
+    
+    # Verify poppler executables exist
+    required_files = ['pdftocairo.exe', 'pdfinfo.exe']
+    for file in required_files:
+        full_path = os.path.join(poppler_path, file)
+        if not os.path.exists(full_path):
+            print(f"WARNING: Required Poppler file not found: {full_path}")
+    
+    # Add Poppler to system PATH if not already there
+    if poppler_path not in os.environ['PATH']:
+        os.environ['PATH'] = f"{poppler_path};{os.environ['PATH']}"
+    
+    # Also set the path for pdf2image
+    os.environ['POPPLER_PATH'] = poppler_path
 
 # Add debug logging
 print("\nEnvironment Setup:")
 print(f"Tesseract command: {pytesseract.pytesseract.tesseract_cmd}")
-print(f"Poppler path: {POPPLER_PATH}")
+print(f"Poppler path: {poppler_path}")
 print(f"POPPLER_PATH env var: {os.environ.get('POPPLER_PATH')}")
 print("\nVerifying Poppler installation:")
 try:
     import subprocess
-    result = subprocess.run([os.path.join(POPPLER_PATH, 'pdfinfo.exe'), '-v'], 
+    result = subprocess.run([os.path.join(poppler_path, 'pdfinfo.exe'), '-v'], 
                           capture_output=True, text=True)
     print(f"Poppler version check: {result.stdout or result.stderr}")
 except Exception as e:
@@ -59,7 +61,7 @@ except Exception as e:
 
 def validate_vin(vin: str) -> bool:
     """Validate Tesla VIN"""
-    if not vin.startswith(('5YJ', '7SA')):
+    if not vin.startswith(('5YJ', '7SA', '7G2')):
         return False
     
     # VIN validation logic here
@@ -123,8 +125,8 @@ def extract_vin(image) -> list:
         text = pytesseract.image_to_string(processed_image, config=custom_config)
         print(f"Extracted text: {text}")
         
-        # Look for Tesla VINs
-        tesla_pattern = r'(5YJ|7SA)[A-HJ-NPR-Z0-9]{14}'
+        # Look for Tesla VINs - updated pattern to include 7G2
+        tesla_pattern = r'(5YJ|7SA|7G2)[A-HJ-NPR-Z0-9]{14}'
         potential_vins = re.finditer(tesla_pattern, text)
         
         valid_vins = []
@@ -140,18 +142,8 @@ def extract_vin(image) -> list:
         raise
 
 def image_to_base64(image) -> str:
-    """Convert OpenCV image to base64 string with thumbnail generation"""
-    # Calculate thumbnail size (maintaining aspect ratio)
-    height, width = image.shape[:2]
-    max_thumb_size = 300  # Maximum thumbnail width/height
-    scale = max_thumb_size / max(width, height)
-    thumb_size = (int(width * scale), int(height * scale))
-    
-    # Create thumbnail
-    thumbnail = cv2.resize(image, thumb_size, interpolation=cv2.INTER_AREA)
-    
-    # Convert to base64
-    _, buffer = cv2.imencode('.png', thumbnail)
+    """Convert OpenCV image to base64 string"""
+    _, buffer = cv2.imencode('.png', image)
     return f"data:image/png;base64,{base64.b64encode(buffer).decode()}"
 
 @app.post("/api/process")
@@ -160,56 +152,84 @@ async def process_pdf(file: UploadFile = File(...)):
         contents = await file.read()
         
         try:
-            # Convert PDF to images
-            images = convert_from_bytes(
-                contents,
-                dpi=300,
-                poppler_path=POPPLER_PATH,
-                use_pdftocairo=True,
-                strict=False
-            )
+            print("\nStarting PDF conversion:")
+            print(f"Using Poppler path: {poppler_path}")
             
-            print(f"Successfully converted PDF. Got {len(images)} pages")
-            
-            all_results = []
-            processed_images = []
-            
-            # Process each page
-            for page_num, image in enumerate(images, 1):
-                try:
-                    print(f"\nProcessing page {page_num}")
-                    page_array = np.array(image)
-                    
-                    processed_image = process_image(page_array)
-                    vins = extract_vin(processed_image)
-                    
-                    # Convert processed image to base64 for preview
-                    image_base64 = image_to_base64(processed_image)
-                    
-                    # Store results for this page
-                    for vin in vins:
-                        all_results.append({
+            try:
+                # Convert all PDF pages to images
+                images = convert_from_bytes(
+                    contents,
+                    dpi=300,
+                    poppler_path=poppler_path,
+                    use_pdftocairo=True,
+                    strict=False
+                )
+                
+                print(f"Successfully converted PDF. Got {len(images)} pages")
+                
+                all_results = []
+                processed_images = []
+                
+                # Process each page
+                for page_num, image in enumerate(images, 1):
+                    try:
+                        print(f"\nProcessing page {page_num}")
+                        page_array = np.array(image)
+                        
+                        # Process the image
+                        processed_image = process_image(page_array)
+                        print(f"Page {page_num} processing complete")
+                        
+                        # Extract VINs
+                        print(f"Starting VIN extraction for page {page_num}...")
+                        vins = extract_vin(processed_image)
+                        print(f"Found VINs on page {page_num}: {vins}")
+                        
+                        # Convert processed image to base64 for preview
+                        image_base64 = image_to_base64(processed_image)
+                        
+                        # Store results for this page
+                        for vin in vins:
+                            all_results.append({
+                                "pageNumber": page_num,
+                                "vin": vin
+                            })
+                        
+                        processed_images.append({
                             "pageNumber": page_num,
-                            "vin": vin,
-                            "confidence": 0.95
+                            "image": image_base64
                         })
-                    
-                    # Always add the processed image
-                    processed_images.append({
-                        "pageNumber": page_num,
-                        "image": image_base64
-                    })
-                    
-                except Exception as page_err:
-                    print(f"Error processing page {page_num}: {str(page_err)}")
-                    continue
-            
-            return {
-                "success": True,
-                "vins": all_results,
-                "processedImages": processed_images  # Make sure this is included in response
-            }
-            
+                        
+                    except Exception as page_err:
+                        print(f"Error processing page {page_num}: {str(page_err)}")
+                        continue
+                
+                if all_results:
+                    return {
+                        "success": True,
+                        "vins": all_results,
+                        "processedImages": processed_images
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "error": {
+                            "message": "No valid Tesla VINs found in document",
+                            "code": "NO_VINS_FOUND"
+                        },
+                        "processedImages": processed_images
+                    }
+                
+            except PDFPageCountError as pdf_err:
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "message": "Failed to convert PDF. Poppler error.",
+                        "error": str(pdf_err),
+                        "poppler_path": poppler_path
+                    }
+                )
+                
         except Exception as e:
             raise HTTPException(
                 status_code=500,

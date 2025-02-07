@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, rgb } from 'pdf-lib';
 import { validateVIN } from '@/utils/vinValidation';
 import { AppError, ErrorCodes } from '@/utils/errorHandling';
 import sharp from 'sharp';
@@ -83,7 +83,7 @@ export async function POST(request: Request) {
     worker = await initializeWorker();
     await worker.setParameters({
       tessedit_char_whitelist: '0123456789ABCDEFGHJKLMNPRSTUVWXYZ',
-      tessedit_ocr_engine_mode: '1',
+      tessedit_ocr_engine_mode: '1', // Use legacy + LSTM for better accuracy
       tessjs_create_pdf: '0',
       tessjs_create_hocr: '0',
       textord_heavy_nr: '1'
@@ -104,6 +104,7 @@ export async function POST(request: Request) {
         results.push({
           pageNumber: 1,
           vin,
+          confidence: 0.95,
           validationErrors: []
         });
         console.log('Valid Tesla VIN found:', vin);
@@ -116,17 +117,22 @@ export async function POST(request: Request) {
       await worker.terminate();
     }
 
-    return NextResponse.json({
-      success: results.length > 0,
-      vins: results,
+    // Always return the processed image, even if no VINs found
+    const response = {
       processedImage: base64,
-      ...(results.length === 0 && {
-        error: {
-          message: 'No valid Tesla VINs found in document',
-          code: ErrorCodes.NO_VINS_FOUND
-        }
-      })
-    }, { 
+      ...(results.length > 0 
+        ? { success: true, vins: results }
+        : { 
+            success: false, 
+            error: { 
+              message: 'No valid Tesla VINs found in document',
+              code: ErrorCodes.NO_VINS_FOUND
+            }
+          }
+      )
+    };
+
+    return NextResponse.json(response, { 
       status: results.length > 0 ? 200 : 404 
     });
 
@@ -145,4 +151,4 @@ export async function POST(request: Request) {
       }
     }, { status: error instanceof AppError ? error.statusCode : 500 });
   }
-}
+} 
